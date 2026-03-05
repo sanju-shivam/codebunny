@@ -28,7 +28,7 @@ async function processReview({ taskId, branchName, baseBranch, repoUrl }) {
 
   activeReviews.add(taskId);
   logger.info(`\n${"═".repeat(60)}`);
-  logger.info(`[ReviewProcessor] Starting review pipeline for task ${taskId}`);
+  logger.info(`[ReviewProcessor] Startin g review pipeline for task ${taskId}`);
 
   try {
     // ── Step 1: Resolve configuration ──────────────────────────────────────
