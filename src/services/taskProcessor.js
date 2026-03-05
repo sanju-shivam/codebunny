@@ -3,6 +3,7 @@ const clickupService = require("./clickupService");
 const gitService = require("./gitService");
 const agentService = require("./agentService");
 const gitProviderService = require("./gitProviderService");
+const { processLocalReview } = require("./reviewProcessor");
 
 // In-memory lock to prevent duplicate runs for the same task
 const activeTasks = new Set();
@@ -14,7 +15,9 @@ const activeTasks = new Set();
  */
 async function processTaskAssignment(taskId) {
   if (activeTasks.has(taskId)) {
-    logger.warn(`[Processor] Task ${taskId} is already being processed – skipping duplicate`);
+    logger.warn(
+      `[Processor] Task ${taskId} is already being processed – skipping duplicate`,
+    );
     return;
   }
 
@@ -33,9 +36,7 @@ async function processTaskAssignment(taskId) {
     // ── Step 2: Resolve repo URL ─────────────────────────────────────────────
     const repoUrl = process.env.GIT_REPO_URL || process.env.GITHUB_REPO_URL;
     if (!repoUrl) {
-      throw new Error(
-        `Missing GIT_REPO_URL (or GITHUB_REPO_URL) in env`
-      );
+      throw new Error(`Missing GIT_REPO_URL (or GITHUB_REPO_URL) in env`);
     }
     logger.info(`[Processor] Repo URL: ${repoUrl}`);
 
@@ -50,11 +51,30 @@ async function processTaskAssignment(taskId) {
     // ── Step 5: Build prompt ─────────────────────────────────────────────────
     const taskSummary = clickupService.buildTaskSummary(task, comments);
     const baseBranch = process.env.GIT_DEFAULT_BRANCH || "main";
-    const prompt = agentService.buildPrompt({ taskSummary, branchName, repoUrl, baseBranch });
+    const prompt = agentService.buildPrompt({
+      taskSummary,
+      branchName,
+      repoUrl,
+      baseBranch,
+    });
 
     // ── Step 6: Run Agent ─────────────────────────────────────────────────
     logger.info(`[Processor] Launching Agent…`);
-    await agentService.runAgent({ localPath: repoCtx.localPath, prompt, taskId });
+    await agentService.runAgent({
+      localPath: repoCtx.localPath,
+      prompt,
+      taskId,
+    });
+
+    // ── Step 6.5: Run local review BEFORE push ──────────────────────────────
+    logger.info(`[Processor] Running reviewer agent on local changes…`);
+    await processLocalReview({
+      taskId,
+      localPath: repoCtx.localPath,
+      branchName,
+      baseBranch,
+      taskSummary,
+    });
 
     // ── Step 7: Push branch (if AUTO_CREATE_PR is false, agent didn't push) ─
     const autoPR = process.env.AUTO_CREATE_PR !== "false";
@@ -93,15 +113,20 @@ async function processTaskAssignment(taskId) {
     await clickupService.postComment(taskId, comment);
     logger.info(`[Processor] Pipeline complete for task ${taskId} ✅`);
   } catch (err) {
-    logger.error(`[Processor] Pipeline failed for task ${taskId}: ${err.message}`, err);
+    logger.error(
+      `[Processor] Pipeline failed for task ${taskId}: ${err.message}`,
+      err,
+    );
 
     // Try to leave a failure comment so the team knows
     try {
       await clickupService.postComment(
         taskId,
-        `⚠️ **Agent** encountered an error:\n\`\`\`\n${err.message}\n\`\`\``
+        `⚠️ **Agent** encountered an error:\n\`\`\`\n${err.message}\n\`\`\``,
       );
-    } catch (_) { /* best-effort */ }
+    } catch (_) {
+      /* best-effort */
+    }
   } finally {
     activeTasks.delete(taskId);
   }
